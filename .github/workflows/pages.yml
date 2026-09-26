@@ -5,6 +5,7 @@ on:
     workflows: [Check registry]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,7 +19,9 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -26,11 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
       - id: fresh
         name: Verify checked commit is still current
         env:
-          CHECKED_SHA: ${{ github.event.workflow_run.head_sha }}
+          CHECKED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           git fetch origin main
           deploy=false
@@ -40,6 +44,14 @@ jobs:
             deploy=true
           fi
           echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        if: steps.fresh.outputs.deploy == 'true'
+        with:
+          python-version: '3.13'
+      - name: Validate registry
+        if: steps.fresh.outputs.deploy == 'true'
+        run: |
+          python3 tools/check.py --root . --base-ref HEAD^
       - name: Stage static registry
         if: steps.fresh.outputs.deploy == 'true'
         run: |

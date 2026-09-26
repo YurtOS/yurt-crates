@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import subprocess
+import re
+import textwrap
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from registry_fixture import crate_archive
@@ -23,13 +25,62 @@ class CheckTests(unittest.TestCase):
         workflows = Path(__file__).resolve().parents[1] / '.github' / 'workflows'
         pages = (workflows / 'pages.yml').read_text()
         publish_workflow = (workflows / 'publish-crate.yml').read_text()
+        self.assertIn('workflow_dispatch:', pages)
+        self.assertIn('github.event_name == \'workflow_dispatch\'', pages)
+        self.assertIn('ref: ${{ github.event.workflow_run.head_sha || github.sha }}', pages)
         self.assertIn('group: yurt-crates-deployment', pages)
         self.assertIn('group: yurt-crates-deployment', publish_workflow)
         self.assertIn('queue: max', pages)
         self.assertIn('queue: max', publish_workflow)
-        self.assertIn('CHECKED_SHA: ${{ github.event.workflow_run.head_sha }}', pages)
+        self.assertIn('CHECKED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}', pages)
         self.assertIn('if [[ "$(git rev-parse origin/main)" != "$CHECKED_SHA" ]]; then', pages)
         self.assertIn("if: steps.fresh.outputs.deploy == 'true'", pages)
+
+    def test_pages_validation_blocks_invalid_committed_snapshots(self):
+        repository = Path(__file__).resolve().parents[1]
+        pages = (repository / '.github/workflows/pages.yml').read_text()
+        match = re.search(
+            r'      - name: Validate registry\n(.*?)        run: \|\n((?:          [^\n]*\n)+)',
+            pages, re.DOTALL,
+        )
+        self.assertIsNotNone(match, 'Pages must validate its checkout before staging')
+        self.assertLess(match.start(), pages.index('      - name: Stage static registry'))
+        self.assertIn("if: steps.fresh.outputs.deploy == 'true'", match.group(1))
+        script = textwrap.dedent(match.group(2))
+        for case, diagnostic in (
+            ('valid', None),
+            ('corrupt', 'checksum mismatch'),
+            ('deleted', 'published registry data was removed'),
+            ('rollback', 'latest moved backwards'),
+        ):
+            with self.subTest(case=case):
+                root, _ = self._committed_baseline()
+                shutil.copytree(repository / 'tools', root / 'tools',
+                                ignore=shutil.ignore_patterns('__pycache__'))
+                if case == 'corrupt':
+                    archive = root / 'crates/rustix/rustix-1.1.5+yurt.1.crate'
+                    archive.write_bytes(archive.read_bytes() + b'corrupt')
+                elif case == 'deleted':
+                    for name in ('latest', 'index.html'):
+                        (root / name).unlink()
+                    for name in ('index', 'crates'):
+                        shutil.rmtree(root / name)
+                elif case == 'rollback':
+                    (root / 'latest').write_text('1\n')
+                    (root / 'index.html').write_text(render_page(root, 1))
+                subprocess.run(['git', 'add', '-A'], cwd=root, check=True)
+                subprocess.run(['git', '-c', 'user.name=Test', '-c',
+                                'user.email=test@example.invalid', 'commit', '-qm', 'candidate'],
+                               cwd=root, check=True)
+                result = subprocess.run(['bash', '-e', '-c', script + '\necho stage-ready'],
+                                        cwd=root, capture_output=True, text=True)
+                if diagnostic is None:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('stage-ready', result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(diagnostic, result.stderr)
+                    self.assertNotIn('stage-ready', result.stdout)
 
     def fixture(self):
         temporary = tempfile.TemporaryDirectory()
