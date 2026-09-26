@@ -20,7 +20,7 @@ permissions:
   pages: write
 
 concurrency:
-  group: yurt-crates-publish
+  group: yurt-crates-deployment
   cancel-in-progress: false
 
 jobs:

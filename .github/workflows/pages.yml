@@ -12,8 +12,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: yurt-crates-deployment
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -26,7 +26,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+      - id: fresh
+        name: Verify checked commit is still current
+        env:
+          CHECKED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git fetch origin main
+          deploy=false
+          if [[ "$(git rev-parse origin/main)" != "$CHECKED_SHA" ]]; then
+            echo "Skipping stale Pages deployment for $CHECKED_SHA"
+          else
+            deploy=true
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
       - name: Stage static registry
+        if: steps.fresh.outputs.deploy == 'true'
         run: |
           mkdir _site
           if [[ -f index.html ]]; then
@@ -38,8 +52,11 @@ jobs:
           [[ ! -d index ]] || cp -R index _site/
           [[ ! -d crates ]] || cp -R crates _site/
       - uses: actions/configure-pages@v5
+        if: steps.fresh.outputs.deploy == 'true'
       - uses: actions/upload-pages-artifact@v3
+        if: steps.fresh.outputs.deploy == 'true'
         with:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
+        if: steps.fresh.outputs.deploy == 'true'
