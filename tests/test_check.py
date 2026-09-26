@@ -25,6 +25,8 @@ class CheckTests(unittest.TestCase):
         publish_workflow = (workflows / 'publish-crate.yml').read_text()
         self.assertIn('group: yurt-crates-deployment', pages)
         self.assertIn('group: yurt-crates-deployment', publish_workflow)
+        self.assertIn('queue: max', pages)
+        self.assertIn('queue: max', publish_workflow)
         self.assertIn('CHECKED_SHA: ${{ github.event.workflow_run.head_sha }}', pages)
         self.assertIn('if [[ "$(git rev-parse origin/main)" != "$CHECKED_SHA" ]]; then', pages)
         self.assertIn("if: steps.fresh.outputs.deploy == 'true'", pages)

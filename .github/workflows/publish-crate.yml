@@ -21,6 +21,7 @@ permissions:
 
 concurrency:
   group: yurt-crates-deployment
+  queue: max
   cancel-in-progress: false
 
 jobs:
