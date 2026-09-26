@@ -1,10 +1,8 @@
 name: Deploy registry pages
 
 on:
-  push:
-    branches: [main]
   workflow_run:
-    workflows: [Publish crate]
+    workflows: [Check registry]
     types: [completed]
     branches: [main]
 
@@ -19,7 +17,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -27,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: Stage static registry
         run: |
           mkdir _site

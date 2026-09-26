@@ -4,11 +4,13 @@ import tempfile
 import unittest
 import json
 import os
+import shutil
 import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from registry_fixture import crate_archive
 from tools.check import check_repository
+from tools.page import render_page
 from tools.publish import publish
 
 
@@ -36,6 +38,15 @@ class CheckTests(unittest.TestCase):
         archive = root / 'crates/rustix/rustix-1.1.5+yurt.1.crate'
         archive.write_bytes(archive.read_bytes() + b'corrupt')
         self.assertTrue(any('checksum' in error for error in check_repository(root, None)))
+
+    def test_index_dependency_metadata_must_match_crate_archive(self):
+        root = self.fixture()
+        path = root / 'index/2/ru/st/rustix'
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]['deps'] = []
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        self.assertTrue(any('metadata differs from crate archive' in error
+                            for error in check_repository(root, None)))
 
     def test_missing_dependency_registry_reports_violation(self):
         root = self.fixture()
@@ -79,6 +90,32 @@ class CheckTests(unittest.TestCase):
         path.write_text(json.dumps(row) + '\n')
         self.assertTrue(any('published snapshot changed' in error
                             for error in check_repository(root, base)))
+
+    def test_deleting_all_published_files_is_rejected_against_base(self):
+        root, base = self._committed_baseline()
+        for name in ('latest', 'index.html'):
+            (root / name).unlink()
+        for name in ('index', 'crates'):
+            shutil.rmtree(root / name)
+        self.assertTrue(check_repository(root, base))
+
+    def test_latest_cannot_move_backwards_from_base(self):
+        root, base = self._committed_baseline()
+        (root / 'latest').write_text('1\n')
+        (root / 'index.html').write_text(render_page(root, 1))
+        self.assertTrue(any('latest moved backwards' in error
+                            for error in check_repository(root, base)))
+
+    def _committed_baseline(self):
+        root = self.fixture()
+        subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=root, check=True)
+        environment = dict(os.environ, GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
+                          GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid')
+        subprocess.run(['git', 'commit', '-qm', 'baseline'], cwd=root, env=environment, check=True)
+        base = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        return root, base
 
     def test_new_snapshot_compares_cleanly_against_existing_base(self):
         root = self.fixture()

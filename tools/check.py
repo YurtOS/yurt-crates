@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.index import index_path, read_crate, _require_registry_url
+from tools.index import index_entry, index_path, read_crate, _require_registry_url
 from tools.publish import DOWNLOAD, _version_parts
 from tools.page import render_page
 
@@ -20,6 +20,16 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
     latest_path = root / 'latest'
     if not latest_path.exists() and not any((root / name).exists()
                                             for name in ('index', 'crates', 'index.html')):
+        if base_ref:
+            base_latest = subprocess.run(
+                ['git', 'show', f'{base_ref}:latest'], cwd=root,
+                check=False, capture_output=True, text=True,
+            )
+            try:
+                if base_latest.returncode == 0 and int(base_latest.stdout.strip()) > 0:
+                    return ['published registry data was removed']
+            except ValueError:
+                return [f'base ref {base_ref} has invalid latest metadata']
         return []
     try:
         latest = int(latest_path.read_text().strip())
@@ -87,6 +97,12 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
                             crate = read_crate(archive)
                             if crate.name != name or crate.version != version:
                                 errors.append(f'snapshot {number}: crate identity mismatch for {name} {version}')
+                            expected = index_entry(crate)
+                            actual = dict(record)
+                            expected.pop('yanked', None)
+                            actual.pop('yanked', None)
+                            if actual != expected:
+                                errors.append(f'snapshot {number}: index metadata differs from crate archive for {name} {version}')
                         except ValueError as error:
                             errors.append(f'snapshot {number}: invalid crate archive {name} {version}: {error}')
                     records.append(record)
@@ -154,6 +170,8 @@ def _check_base_immutability(root: Path, base_ref: str, latest: int) -> list[str
         base_latest = subprocess.run(['git', 'show', f'{base_ref}:latest'], cwd=root,
                                      check=False, capture_output=True, text=True)
         old_latest = int(base_latest.stdout.strip()) if base_latest.returncode == 0 else 0
+        if latest < old_latest:
+            errors.append(f'latest moved backwards from {old_latest} to {latest}')
         output = subprocess.run(
             ['git', 'diff', '--name-only', '-z', base_ref], cwd=root,
             check=True, capture_output=True,
