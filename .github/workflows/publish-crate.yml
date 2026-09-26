@@ -17,15 +17,19 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  pages: write
 
 concurrency:
-  group: yurt-crates-publish
+  group: yurt-crates-deployment
+  queue: max
   cancel-in-progress: false
 
 jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,3 +111,14 @@ jobs:
           git fetch origin main
           test "$(git rev-parse origin/main)" = "$BASE_SHA"
           git push origin HEAD:refs/heads/main
+      - uses: actions/configure-pages@v5
+      - name: Stage static registry
+        run: |
+          mkdir _site
+          cp index.html latest _site/
+          cp -R index crates _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
