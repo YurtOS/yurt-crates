@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.index import CRATES_IO_INDEX, index_path, read_crate
+from tools.index import index_path, read_crate, _require_registry_url
 from tools.publish import DOWNLOAD, _version_parts
 from tools.page import render_page
 
@@ -18,6 +18,9 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
     root = Path(root)
     errors = []
     latest_path = root / 'latest'
+    if not latest_path.exists() and not any((root / name).exists()
+                                            for name in ('index', 'crates', 'index.html')):
+        return []
     try:
         latest = int(latest_path.read_text().strip())
         if latest < 1:
@@ -56,6 +59,8 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
                     name, version = record.get('name'), record.get('vers')
                     if not isinstance(name, str) or not isinstance(version, str):
                         raise ValueError('record missing name or version')
+                    if not isinstance(record.get('yanked'), bool):
+                        errors.append(f'snapshot {number}: {name} {version} has invalid yanked flag')
                     if file.relative_to(snapshot) != index_path(name):
                         errors.append(f'snapshot {number}: wrong index file for {name} {version}')
                     upstream, _ = _version_parts(version)
@@ -64,13 +69,26 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
                         errors.append(f'snapshot {number}: duplicate upstream version {name} {upstream}')
                     seen.add(identity)
                     for dep in record.get('deps', []):
-                        if not isinstance(dep, dict) or not isinstance(dep.get('registry'), str):
+                        if (not isinstance(dep, dict) or not isinstance(dep.get('registry'), str)
+                                or not dep['registry']):
                             errors.append(f'snapshot {number}: {name} {version} dependency missing registry')
+                        else:
+                            try:
+                                _require_registry_url(dep['registry'], dep.get('name', '<unknown>'))
+                            except ValueError:
+                                errors.append(f'snapshot {number}: {name} {version} dependency has invalid registry')
                     archive = root / 'crates' / name / f'{name}-{version}.crate'
                     if not archive.is_file():
                         errors.append(f'snapshot {number}: missing crate archive {name} {version}')
-                    elif hashlib.sha256(archive.read_bytes()).hexdigest() != record.get('cksum'):
-                        errors.append(f'snapshot {number}: checksum mismatch for {name} {version}')
+                    else:
+                        if hashlib.sha256(archive.read_bytes()).hexdigest() != record.get('cksum'):
+                            errors.append(f'snapshot {number}: checksum mismatch for {name} {version}')
+                        try:
+                            crate = read_crate(archive)
+                            if crate.name != name or crate.version != version:
+                                errors.append(f'snapshot {number}: crate identity mismatch for {name} {version}')
+                        except ValueError as error:
+                            errors.append(f'snapshot {number}: invalid crate archive {name} {version}: {error}')
                     records.append(record)
                     previous = previous_entries.get((name, version))
                     if previous is not None:
@@ -95,8 +113,11 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
                     errors.append(f'snapshot {number}: invalid ports.json release for {name}')
                     continue
                 version = release.get('version')
-                if (not isinstance(version, str) or not isinstance(release.get('source_commit'), str)
-                        or not isinstance(release.get('revision'), int)):
+                if (not isinstance(version, str)
+                        or not isinstance(release.get('source_commit'), str)
+                        or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', release['source_commit'])
+                        or not isinstance(release.get('revision'), int)
+                        or isinstance(release.get('revision'), bool)):
                     errors.append(f'snapshot {number}: invalid ports.json release metadata for {name}')
                     continue
                 try:
@@ -107,6 +128,8 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
                     errors.append(f'snapshot {number}: {error}')
                 if (name, version) not in indexed:
                     errors.append(f'snapshot {number}: ports.json release missing index row {name} {version}')
+                if (name, version) in port_indexed:
+                    errors.append(f'snapshot {number}: duplicate ports.json release {name} {version}')
                 port_indexed.add((name, version))
         if indexed != port_indexed:
             errors.append(f'snapshot {number}: ports.json and index entries disagree')
@@ -128,6 +151,9 @@ def check_repository(root: Path, base_ref: str | None) -> list[str]:
 def _check_base_immutability(root: Path, base_ref: str, latest: int) -> list[str]:
     errors = []
     try:
+        base_latest = subprocess.run(['git', 'show', f'{base_ref}:latest'], cwd=root,
+                                     check=False, capture_output=True, text=True)
+        old_latest = int(base_latest.stdout.strip()) if base_latest.returncode == 0 else 0
         output = subprocess.run(
             ['git', 'diff', '--name-only', '-z', base_ref], cwd=root,
             check=True, capture_output=True,
@@ -135,24 +161,31 @@ def _check_base_immutability(root: Path, base_ref: str, latest: int) -> list[str
         changed = [Path(item.decode()) for item in output.split(b'\0') if item]
         for path in changed:
             match = re.match(r'index/(\d+)/(.+)', path.as_posix())
-            if match and int(match.group(1)) <= latest:
+            if match and int(match.group(1)) <= old_latest:
                 old = subprocess.run(['git', 'show', f'{base_ref}:{path.as_posix()}'], cwd=root,
                                      check=False, capture_output=True)
                 new_path = root / path
                 if old.returncode != 0 or not new_path.is_file():
                     errors.append(f'published snapshot changed: {path.as_posix()}')
                     continue
+                relative_path = Path(match.group(2))
+                if relative_path.name in {'config.json', 'ports.json'}:
+                    if old.stdout != new_path.read_bytes():
+                        errors.append(f'published snapshot changed: {path.as_posix()}')
+                    continue
                 try:
                     old_rows = [json.loads(line) for line in old.stdout.splitlines()]
                     new_rows = [json.loads(line) for line in new_path.read_bytes().splitlines()]
+
                     def without_yanked(row):
                         result = dict(row)
                         result.pop('yanked', None)
                         return result
+
                     if ([without_yanked(row) for row in old_rows]
                             != [without_yanked(row) for row in new_rows]):
                         errors.append(f'published snapshot changed: {path.as_posix()}')
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError, ValueError):
                     errors.append(f'published snapshot is malformed: {path.as_posix()}')
     except (OSError, subprocess.CalledProcessError) as error:
         errors.append(f'cannot compare base ref {base_ref}: {error}')

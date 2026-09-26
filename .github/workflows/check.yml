@@ -1,0 +1,32 @@
+name: Check registry
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Unit and sparse HTTP acceptance tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Check registry consistency
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_REF" && "$BASE_REF" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && git cat-file -e "$BASE_REF^{commit}" 2>/dev/null; then
+            python3 tools/check.py --root . --base-ref "$BASE_REF"
+          else
+            python3 tools/check.py --root .
+          fi

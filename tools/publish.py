@@ -5,7 +5,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import argparse
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.index import index_entry, index_path, read_crate
 from tools.page import render_page
@@ -15,7 +19,7 @@ DOWNLOAD = 'https://yurtos.github.io/yurt-crates/crates/{crate}/{crate}-{version
 
 def publish(root: Path, crate_path: Path, ports_commit: str, expected_latest: int) -> int:
     root, crate_path = Path(root), Path(crate_path)
-    if not re.fullmatch(r'[0-9a-f]{40,64}', ports_commit):
+    if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', ports_commit):
         raise ValueError('ports_commit must be a full hexadecimal commit id')
     if not isinstance(expected_latest, int) or expected_latest < 0:
         raise ValueError('expected_latest must be a nonnegative integer')
@@ -52,6 +56,8 @@ def publish(root: Path, crate_path: Path, ports_commit: str, expected_latest: in
         stage_parent.mkdir(exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=f'{snapshot}-', dir=stage_parent))
         moved_crate = False
+        temporary_crate = None
+        previous_page = (root / 'index.html').read_bytes() if (root / 'index.html').exists() else None
         try:
             if previous:
                 shutil.copytree(previous, stage, dirs_exist_ok=True)
@@ -67,6 +73,22 @@ def publish(root: Path, crate_path: Path, ports_commit: str, expected_latest: in
             (stage / 'ports.json').write_text(json.dumps(previous_rows, sort_keys=True, indent=2) + '\n')
             _validate_snapshot(stage, root, crate, destination)
 
+            page = _render_staged_page(stage, snapshot)
+            with tempfile.TemporaryDirectory(prefix='yurt-crates-check-') as candidate_name:
+                candidate = Path(candidate_name)
+                shutil.copytree(root, candidate, dirs_exist_ok=True, ignore=shutil.ignore_patterns(
+                    '.git', '.staging', '.publish.lock', 'latest.tmp', 'index.html.tmp',
+                ))
+                (candidate / 'crates' / crate.name).mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(crate_path, candidate / 'crates' / crate.name / destination.name)
+                shutil.copytree(stage, candidate / 'index' / str(snapshot))
+                (candidate / 'index.html').write_text(page)
+                (candidate / 'latest').write_text(f'{snapshot}\n')
+                from tools.check import check_repository
+                errors = check_repository(candidate, None)
+                if errors:
+                    raise ValueError('prospective registry failed consistency check: ' + '; '.join(errors))
+
             crate_dir.mkdir(parents=True, exist_ok=True)
             temporary_crate = crate_dir / f'.{destination.name}.tmp'
             shutil.copyfile(crate_path, temporary_crate)
@@ -75,18 +97,23 @@ def publish(root: Path, crate_path: Path, ports_commit: str, expected_latest: in
             final_snapshot = root / 'index' / str(snapshot)
             final_snapshot.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, final_snapshot)
-            page = render_page(root, snapshot)
             (root / 'index.html.tmp').write_text(page)
             os.replace(root / 'index.html.tmp', root / 'index.html')
             (root / 'latest.tmp').write_text(f'{snapshot}\n')
             os.replace(root / 'latest.tmp', root / 'latest')
             return snapshot
         except Exception:
+            if temporary_crate is not None:
+                temporary_crate.unlink(missing_ok=True)
             if moved_crate:
                 destination.unlink(missing_ok=True)
             shutil.rmtree(root / 'index' / str(snapshot), ignore_errors=True)
             (root / 'latest.tmp').unlink(missing_ok=True)
             (root / 'index.html.tmp').unlink(missing_ok=True)
+            if previous_page is None:
+                (root / 'index.html').unlink(missing_ok=True)
+            else:
+                (root / 'index.html').write_bytes(previous_page)
             raise
         finally:
             shutil.rmtree(stage, ignore_errors=True)
@@ -120,6 +147,30 @@ def _load_ports(path: Path) -> dict:
 
 def _read_index(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def _render_staged_page(stage: Path, snapshot: int) -> str:
+    with tempfile.TemporaryDirectory(prefix='yurt-crates-page-') as temporary:
+        root = Path(temporary)
+        (root / 'index').mkdir()
+        shutil.copytree(stage, root / 'index' / str(snapshot))
+        return render_page(root, snapshot)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=Path, default=Path('.'))
+    parser.add_argument('--crate', type=Path, required=True)
+    parser.add_argument('--ports-commit', required=True)
+    parser.add_argument('--expected-latest', type=int, required=True)
+    args = parser.parse_args()
+    try:
+        number = publish(args.root, args.crate, args.ports_commit, args.expected_latest)
+    except (OSError, ValueError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(number)
+    return 0
 
 
 def _validate_snapshot(stage: Path, root: Path, new_crate, destination: Path) -> None:
@@ -156,5 +207,11 @@ def _validate_snapshot(stage: Path, root: Path, new_crate, destination: Path) ->
             raise ValueError(f'checksum mismatch for {name} {version}')
     for name, releases in rows.items():
         for release in releases:
-            if (name, release['version']) not in {(record['name'], record['vers']) for record in records}:
+            if (name, release['version']) not in {
+                (record['name'], record['vers']) for record in records
+            }:
                 raise ValueError(f'ports.json entry missing from index: {name} {release["version"]}')
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

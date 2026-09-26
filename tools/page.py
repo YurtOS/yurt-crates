@@ -15,15 +15,16 @@ def render_page(root: Path, snapshot: int) -> str:
     for name, releases in sorted(data.items()):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', name) or not isinstance(releases, list):
             raise ValueError(f'invalid ports.json crate entry: {name!r}')
+        if any(not isinstance(release, dict) for release in releases):
+            raise ValueError(f'invalid release entry for {name}')
         for release in sorted(releases, key=lambda item: item.get('upstream_version', '')):
-            if not isinstance(release, dict):
-                raise ValueError(f'invalid release entry for {name}')
             upstream = release.get('upstream_version')
             revision = release.get('revision')
             commit = release.get('source_commit')
             if (not isinstance(upstream, str) or not re.fullmatch(r'\d+\.\d+\.\d+', upstream)
-                    or not isinstance(revision, int) or revision < 0
-                    or not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40,64}', commit)):
+                    or not isinstance(revision, int) or isinstance(revision, bool) or revision < 0
+                    or not isinstance(commit, str)
+                    or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', commit)):
                 raise ValueError(f'invalid release metadata for {name}')
             rows.append(
                 '<tr><td>' + html.escape(name) + '</td><td>' + html.escape(upstream)

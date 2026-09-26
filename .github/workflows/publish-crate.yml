@@ -1,0 +1,109 @@
+name: Publish crate
+
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: Crate to publish
+        required: true
+        type: choice
+        options: [rustix, filetime]
+      ports_ref:
+        description: Full immutable yurt-ports commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: yurt-crates-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Verify publication base
+        id: base
+        run: |
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: YurtOS/yurt-ports
+          ref: ${{ inputs.ports_ref }}
+          token: ${{ secrets.YURT_PORTS_READ_TOKEN }}
+          path: yurt-ports
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Verify producer ref and run source tests
+        env:
+          PORTS_REF: ${{ inputs.ports_ref }}
+          CRATE: ${{ inputs.crate }}
+        run: |
+          [[ "$PORTS_REF" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
+          test "$(git -C yurt-ports rev-parse HEAD)" = "$PORTS_REF"
+          python3 "yurt-ports/crates/$CRATE/tests/source_test.py"
+      - name: Run Linux host tests
+        env:
+          CRATE: ${{ inputs.crate }}
+        run: bash "yurt-ports/crates/$CRATE/tests/host.sh"
+      - name: Build Cargo archive
+        env:
+          CRATE: ${{ inputs.crate }}
+        run: bash "yurt-ports/crates/$CRATE/scripts/package.sh"
+      - name: Resolve crate archive path
+        id: artifact
+        env:
+          CRATE: ${{ inputs.crate }}
+        run: |
+          archive="$(python3 - "yurt-ports/crates/$CRATE/port.toml" <<'PY'
+          from pathlib import Path
+          import sys, tomllib
+          port = Path(sys.argv[1])
+          data = tomllib.loads(port.read_text())
+          if data['name'] != __import__('os').environ['CRATE']:
+              raise SystemExit('selected crate does not match port.toml identity')
+          print(port.parent / 'build' / 'dist' / f"{data['name']}-{data['version']}+yurt.{data['revision']}.crate")
+          PY
+          )"
+          test -f "$archive"
+          test -z "$(git -C yurt-ports status --porcelain --untracked-files=all)"
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.artifact.outputs.path }}
+      - name: Publish snapshot
+        env:
+          CRATE_PATH: ${{ steps.artifact.outputs.path }}
+          PORTS_COMMIT: ${{ inputs.ports_ref }}
+        run: |
+          latest=0
+          [[ ! -f latest ]] || latest="$(cat latest)"
+          python3 tools/publish.py --root . --crate "$CRATE_PATH" \
+            --ports-commit "$PORTS_COMMIT" --expected-latest "$latest"
+          python3 tools/check.py --root . --base-ref "${{ steps.base.outputs.sha }}"
+      - name: Commit and push if main is unchanged
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          CRATE: ${{ inputs.crate }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add latest index crates index.html
+          git commit -m "publish: $CRATE port snapshot"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          git push origin HEAD:refs/heads/main

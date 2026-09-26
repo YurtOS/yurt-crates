@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,16 @@ class PublishTests(unittest.TestCase):
         self.assertFalse((self.root / 'latest').exists())
         self.assertFalse((self.root / 'index/1').exists())
         self.assertFalse((self.root / 'crates/rustix/rustix-1.1.5+yurt.1.crate').exists())
+
+    def test_command_line_publisher_runs_the_publication_path(self):
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parents[1] / 'tools/publish.py'),
+             '--root', str(self.root), '--crate', str(self.one), '--ports-commit', 'a' * 40,
+             '--expected-latest', '0'],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(result.stdout.strip(), '1')
+        self.assertEqual((self.root / 'latest').read_text(), '1\n')
 
 
 if __name__ == '__main__':

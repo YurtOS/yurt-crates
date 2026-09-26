@@ -13,6 +13,10 @@ from tools.publish import publish
 
 
 class CheckTests(unittest.TestCase):
+    def test_empty_registry_is_valid_before_first_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(check_repository(Path(temporary), None), [])
+
     def fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -75,6 +79,35 @@ class CheckTests(unittest.TestCase):
         path.write_text(json.dumps(row) + '\n')
         self.assertTrue(any('published snapshot changed' in error
                             for error in check_repository(root, base)))
+
+    def test_new_snapshot_compares_cleanly_against_existing_base(self):
+        root = self.fixture()
+        subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=root, check=True)
+        environment = dict(os.environ, GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
+                          GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid')
+        subprocess.run(['git', 'commit', '-qm', 'baseline'], cwd=root, env=environment, check=True)
+        base = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        incoming = root.parent / 'incoming'
+        archive = crate_archive(incoming, '1.1.6+yurt.1')
+        publish(root, archive, 'c' * 40, 2)
+        self.assertEqual(check_repository(root, base), [])
+
+    def test_yanked_only_edit_to_existing_snapshot_is_allowed(self):
+        root = self.fixture()
+        subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=root, check=True)
+        environment = dict(os.environ, GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
+                          GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid')
+        subprocess.run(['git', 'commit', '-qm', 'baseline'], cwd=root, env=environment, check=True)
+        base = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        path = root / 'index/1/ru/st/rustix'
+        row = json.loads(path.read_text())
+        row['yanked'] = True
+        path.write_text(json.dumps(row) + '\n')
+        self.assertEqual(check_repository(root, base), [])
 
     def test_page_escapes_listing_values_and_matches_snapshot(self):
         root = self.fixture()
