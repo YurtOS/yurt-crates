@@ -7,7 +7,7 @@ on:
         description: Crate to publish
         required: true
         type: choice
-        options: [rustix, filetime]
+        options: [rustix, filetime, libc]
       ports_ref:
         description: Full immutable yurt-ports commit SHA
         required: true
