@@ -31,3 +31,12 @@ output.
 This is a static sparse registry. Cargo registry API commands such as
 `cargo search` are not available; use the listing at
 <https://yurtos.github.io/yurt-crates/> instead.
+
+## Licenses
+
+The repository's own generator, tools, workflows, tests and static pages are
+licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
+
+That license does not cover the crates. Each crate keeps its upstream license,
+named in the `license` field of the `Cargo.toml` inside its `.crate` archive.
