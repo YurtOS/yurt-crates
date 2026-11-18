@@ -31,7 +31,7 @@ jobs:
     environment:
       name: github-pages
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -41,14 +41,14 @@ jobs:
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YurtOS/yurt-ports
           ref: ${{ inputs.ports_ref }}
           token: ${{ secrets.YURT_PORTS_READ_TOKEN }}
           path: yurt-ports
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -88,7 +88,7 @@ jobs:
           test -f "$archive"
           test -z "$(git -C yurt-ports status --porcelain --untracked-files=all)"
           echo "path=$archive" >> "$GITHUB_OUTPUT"
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.artifact.outputs.path }}
       - name: Publish snapshot
@@ -113,14 +113,14 @@ jobs:
           git fetch origin main
           test "$(git rev-parse origin/main)" = "$BASE_SHA"
           git push origin HEAD:refs/heads/main
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Stage static registry
         run: |
           mkdir _site
           cp index.html latest _site/
           cp -R index crates _site/
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
